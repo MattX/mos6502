@@ -49,7 +49,8 @@
 use crate::Variant;
 use crate::instruction::{AddressingMode, DecodedInstr, Instruction, OpInput};
 use crate::memory::{
-    Bus, IRQ_INTERRUPT_VECTOR_LO, NMI_INTERRUPT_VECTOR_LO, RESET_VECTOR_HI, RESET_VECTOR_LO,
+    Bus, ControlSignals, IRQ_INTERRUPT_VECTOR_LO, NMI_INTERRUPT_VECTOR_LO, RESET_VECTOR_HI,
+    RESET_VECTOR_LO,
 };
 
 use crate::registers::{Registers, StackPointer, Status, StatusArgs};
@@ -146,8 +147,9 @@ impl<M: Bus, V: Variant> CPU<M, V> {
         self.registers.status.insert(Status::PS_DISABLE_INTERRUPTS);
 
         // Read reset vector: low byte at $FFFC, high byte at $FFFD
-        let reset_vector_low = self.memory.get_byte(RESET_VECTOR_LO);
-        let reset_vector_high = self.memory.get_byte(RESET_VECTOR_HI);
+        let vpb = ControlSignals { vector_pull: true, ..ControlSignals::default() };
+        let reset_vector_low = self.memory.get_byte_with_signals(RESET_VECTOR_LO, vpb);
+        let reset_vector_high = self.memory.get_byte_with_signals(RESET_VECTOR_HI, vpb);
         self.registers.program_counter = u16::from_le_bytes([reset_vector_low, reset_vector_high]);
     }
 
@@ -165,7 +167,10 @@ impl<M: Bus, V: Variant> CPU<M, V> {
             [lo, hi]
         }
 
-        let x: u8 = self.memory.get_byte(self.registers.program_counter);
+        let x: u8 = self.memory.get_byte_with_signals(
+            self.registers.program_counter,
+            ControlSignals { sync: true, ..ControlSignals::default() },
+        );
 
         match V::decode(x) {
             Some((instr, am)) => {
@@ -486,7 +491,11 @@ impl<M: Bus, V: Variant> CPU<M, V> {
             (Instruction::ASL, OpInput::UseAddress { address: addr, .. }) => {
                 let mut operand: u8 = self.memory.get_byte(addr);
                 CPU::<M, V>::shift_left_with_flags(&mut operand, &mut self.registers.status);
-                self.memory.set_byte(addr, operand);
+                self.memory.set_byte_with_signals(
+                    addr,
+                    operand,
+                    ControlSignals { memory_lock: true, ..ControlSignals::default() },
+                );
             }
 
             (Instruction::BCC, OpInput::UseRelative(rel)) => {
@@ -606,8 +615,9 @@ impl<M: Bus, V: Variant> CPU<M, V> {
                 self.push_address(return_addr);
                 // Push status with B flag and unused bit set (both bits 4 and 5 always set on stack)
                 self.push_on_stack(self.registers.status.bits() | 0x30);
-                let pcl = self.memory.get_byte(0xfffe);
-                let pch = self.memory.get_byte(0xffff);
+                let vpb = ControlSignals { vector_pull: true, ..ControlSignals::default() };
+                let pcl = self.memory.get_byte_with_signals(0xfffe, vpb);
+                let pch = self.memory.get_byte_with_signals(0xffff, vpb);
                 self.jump((u16::from(pch) << 8) | u16::from(pcl));
                 self.set_flag(Status::PS_DISABLE_INTERRUPTS);
             }
@@ -622,8 +632,9 @@ impl<M: Bus, V: Variant> CPU<M, V> {
                 }
                 // Push status with B flag and unused bit set (both bits 4 and 5 always set on stack)
                 self.push_on_stack(self.registers.status.bits() | 0x30);
-                let pcl = self.memory.get_byte(0xfffe);
-                let pch = self.memory.get_byte(0xffff);
+                let vpb = ControlSignals { vector_pull: true, ..ControlSignals::default() };
+                let pcl = self.memory.get_byte_with_signals(0xfffe, vpb);
+                let pch = self.memory.get_byte_with_signals(0xffff, vpb);
                 self.jump((u16::from(pch) << 8) | u16::from(pcl));
                 self.set_flag(Status::PS_DISABLE_INTERRUPTS);
                 self.unset_flag(Status::PS_DECIMAL_MODE);
@@ -679,7 +690,11 @@ impl<M: Bus, V: Variant> CPU<M, V> {
             (Instruction::DEC, OpInput::UseAddress { address: addr, .. }) => {
                 let mut operand: u8 = self.memory.get_byte(addr);
                 CPU::<M, V>::decrement(&mut operand, &mut self.registers.status);
-                self.memory.set_byte(addr, operand);
+                self.memory.set_byte_with_signals(
+                    addr,
+                    operand,
+                    ControlSignals { memory_lock: true, ..ControlSignals::default() },
+                );
             }
             (Instruction::DEC, OpInput::UseImplied) => {
                 // 65C02 DEC A (accumulator)
@@ -705,7 +720,11 @@ impl<M: Bus, V: Variant> CPU<M, V> {
             (Instruction::INC, OpInput::UseAddress { address: addr, .. }) => {
                 let mut operand: u8 = self.memory.get_byte(addr);
                 CPU::<M, V>::increment(&mut operand, &mut self.registers.status);
-                self.memory.set_byte(addr, operand);
+                self.memory.set_byte_with_signals(
+                    addr,
+                    operand,
+                    ControlSignals { memory_lock: true, ..ControlSignals::default() },
+                );
             }
             (Instruction::INC, OpInput::UseImplied) => {
                 // 65C02 INC A (accumulator)
@@ -766,7 +785,11 @@ impl<M: Bus, V: Variant> CPU<M, V> {
             (Instruction::LSR, OpInput::UseAddress { address: addr, .. }) => {
                 let mut operand: u8 = self.memory.get_byte(addr);
                 CPU::<M, V>::shift_right_with_flags(&mut operand, &mut self.registers.status);
-                self.memory.set_byte(addr, operand);
+                self.memory.set_byte_with_signals(
+                    addr,
+                    operand,
+                    ControlSignals { memory_lock: true, ..ControlSignals::default() },
+                );
             }
 
             (Instruction::ORA, OpInput::UseImmediate(val)) => {
@@ -851,7 +874,11 @@ impl<M: Bus, V: Variant> CPU<M, V> {
             (Instruction::ROL, OpInput::UseAddress { address: addr, .. }) => {
                 let mut operand: u8 = self.memory.get_byte(addr);
                 CPU::<M, V>::rotate_left_with_flags(&mut operand, &mut self.registers.status);
-                self.memory.set_byte(addr, operand);
+                self.memory.set_byte_with_signals(
+                    addr,
+                    operand,
+                    ControlSignals { memory_lock: true, ..ControlSignals::default() },
+                );
             }
             (Instruction::ROR, OpInput::UseImplied) => {
                 // Accumulator mode
@@ -862,7 +889,11 @@ impl<M: Bus, V: Variant> CPU<M, V> {
             (Instruction::ROR, OpInput::UseAddress { address: addr, .. }) => {
                 let mut operand: u8 = self.memory.get_byte(addr);
                 CPU::<M, V>::rotate_right_with_flags(&mut operand, &mut self.registers.status);
-                self.memory.set_byte(addr, operand);
+                self.memory.set_byte_with_signals(
+                    addr,
+                    operand,
+                    ControlSignals { memory_lock: true, ..ControlSignals::default() },
+                );
             }
             (Instruction::RTI, OpInput::UseImplied) => {
                 // Pull status
@@ -949,7 +980,11 @@ impl<M: Bus, V: Variant> CPU<M, V> {
 
                 // TRB: reset (clear) the bits in memory that are 1 in accumulator
                 let res = val & !self.registers.accumulator;
-                self.memory.set_byte(addr, res);
+                self.memory.set_byte_with_signals(
+                    addr,
+                    res,
+                    ControlSignals { memory_lock: true, ..ControlSignals::default() },
+                );
             }
             (Instruction::TSB, OpInput::UseAddress { address: addr, .. }) => {
                 let val = self.memory.get_byte(addr);
@@ -965,7 +1000,11 @@ impl<M: Bus, V: Variant> CPU<M, V> {
 
                 // TSB: set the bits in memory that are 1 in accumulator
                 let res = val | self.registers.accumulator;
-                self.memory.set_byte(addr, res);
+                self.memory.set_byte_with_signals(
+                    addr,
+                    res,
+                    ControlSignals { memory_lock: true, ..ControlSignals::default() },
+                );
             }
             (Instruction::TSX, OpInput::UseImplied) => {
                 let StackPointer(val) = self.registers.stack_pointer;
@@ -1733,8 +1772,9 @@ impl<M: Bus, V: Variant> CPU<M, V> {
         self.registers.status.insert(Status::PS_DISABLE_INTERRUPTS);
 
         // Load PC from interrupt vector
-        let pcl = self.memory.get_byte(vector_addr);
-        let pch = self.memory.get_byte(vector_addr.wrapping_add(1));
+        let vpb = ControlSignals { vector_pull: true, ..ControlSignals::default() };
+        let pcl = self.memory.get_byte_with_signals(vector_addr, vpb);
+        let pch = self.memory.get_byte_with_signals(vector_addr.wrapping_add(1), vpb);
         self.registers.program_counter = u16::from_le_bytes([pcl, pch]);
     }
 
